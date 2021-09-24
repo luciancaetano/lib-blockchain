@@ -1,5 +1,5 @@
 {
-  "name": "lib-clockchain",
+  "name": "lib-blockchain",
   "version": "1.0.0",
   "description": "Basic blockchain implementation",
   "main": "./dist/index.js",
