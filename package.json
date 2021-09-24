@@ -1,6 +1,6 @@
 {
   "name": "lib-blockchain",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Basic blockchain implementation",
   "main": "./dist/index.js",
   "scripts": {
@@ -8,6 +8,11 @@
     "lint": "eslint src",
     "test": "jest --coverage"
   },
+  "keywords": [
+    "blockchain",
+    "bitcoin",
+    "crypto"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/luciancaetano/lib-blockchain.git"
