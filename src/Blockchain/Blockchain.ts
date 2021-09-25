@@ -1,7 +1,5 @@
 import crypto from 'crypto';
 import level from 'level';
-import { EventEmitter } from 'events';
-import { LockMutex } from '../Mutex/LockMutex';
 import { Block, GenesisBlock, OnHashFunction } from './types';
 
 const encodeKey = (key: number) => {
@@ -13,11 +11,11 @@ const encodeKey = (key: number) => {
 export class Blockchain<BlockType extends Block> {
     private db: level.LevelDB;
 
-    private emitter = new EventEmitter();
-
-    private lock: LockMutex;
-
     private isReplacing: boolean;
+
+    private isReady = false;
+
+    private isLocked = false;
 
     /**
      * @constructor
@@ -28,11 +26,9 @@ export class Blockchain<BlockType extends Block> {
             if (err) {
                 throw err;
             } else {
-                this.emitter.emit('ready');
+                this.isReady = true;
             }
         });
-
-        this.lock = new LockMutex();
         if (onHash) {
             this.onHash = onHash;
         }
@@ -105,7 +101,7 @@ export class Blockchain<BlockType extends Block> {
      * Creates the genesis block
      */
     public createGenesisBlock = async (): Promise<GenesisBlock | null> => {
-        await this.lock.acquire();
+        await this.acquire();
 
         if (await this.getLastBlock()) {
             return null;
@@ -123,7 +119,7 @@ export class Blockchain<BlockType extends Block> {
 
         await this.db.put(encodeKey(genesisBlock.index), genesisBlock);
 
-        this.lock.release();
+        this.release();
 
         return genesisBlock;
     };
@@ -134,31 +130,31 @@ export class Blockchain<BlockType extends Block> {
      * @param  {BlockType} data
      */
     public addBlock = (block: Omit<BlockType, 'hash' | 'previousHash' | 'index' | 'timestamp'>) => new Promise<BlockType>(async (resolve, reject) => {
-        await this.lock.acquire();
+        try {
+            await this.acquire();
 
-        const lastBlock = await this.getLastBlock();
+            const lastBlock = await this.getLastBlock();
 
-        if (!lastBlock) throw new Error('No genesis block found');
+            if (!lastBlock) throw new Error('No genesis block found');
 
-        const newBlock: BlockType = {
-            ...block,
-            hash: '',
-            previousHash: lastBlock.hash,
-            index: 0,
-            timestamp: new Date().getTime(),
-        } as any;
+            const newBlock: BlockType = {
+                ...block,
+                hash: '',
+                previousHash: lastBlock.hash,
+                index: 0,
+                timestamp: new Date().getTime(),
+            } as any;
 
-        newBlock.index = lastBlock.index + 1;
-        newBlock.hash = await this.onHash(newBlock);
+            newBlock.index = lastBlock.index + 1;
+            newBlock.hash = await this.onHash(newBlock);
 
-        this.db.put(encodeKey(newBlock.index), newBlock, (err) => {
-            if (err) reject(err);
-
-            resolve(newBlock);
-            this.emitter.emit('blockAdded', newBlock);
-        });
-
-        return newBlock;
+            this.db.put(encodeKey(newBlock.index), newBlock, (err) => {
+                if (err) reject(err);
+                resolve(newBlock);
+            });
+        } catch (e) {
+            reject(e);
+        }
     });
 
     /**
@@ -186,7 +182,7 @@ export class Blockchain<BlockType extends Block> {
      * @param  {BlockType[]} blocks
      */
     public replaceBlockchain = async (blocks: BlockType[]) => {
-        await this.lock.acquire();
+        await this.acquire();
 
         const currentBlockchainLen = await this.length();
 
@@ -198,7 +194,7 @@ export class Blockchain<BlockType extends Block> {
 
         for (const buffer of blocks) {
             if (!await this.validateIncomingBlocks(blocks)) {
-                this.lock.release();
+                this.release();
                 throw new Error('The incoming chain must be valid');
             }
 
@@ -208,7 +204,7 @@ export class Blockchain<BlockType extends Block> {
         }
 
         this.isReplacing = false;
-        this.lock.release();
+        this.release();
     }
 
     /**
@@ -343,18 +339,30 @@ export class Blockchain<BlockType extends Block> {
         }
     }
 
-    public onReady = (callback: () => void) => {
-        this.emitter.on('ready', callback);
-    }
+    // wait for isReady be true using timer
+    public awaitForDatabaseConnection = () => new Promise<void>((resolve) => {
+        const timer = setInterval(() => {
+            if (this.isReady) {
+                clearInterval(timer);
+                resolve();
+            }
+        }, 100);
+    })
 
-    public awaitForDatabaseConnection() {
-        return new Promise<void>((resolve) => {
-            this.emitter.on('ready', resolve);
-        });
-    }
+    private acquire = () => new Promise<void>((resolve) => {
+        const timer = setInterval(() => {
+            if (!this.isLocked) {
+                clearInterval(timer);
+                resolve();
+            }
+        }, 100);
+    });
+
+    private release = () => {
+        this.isLocked = false;
+    };
 
     public close = async () => {
-        this.emitter.removeAllListeners();
         await this.db.close();
     }
 }

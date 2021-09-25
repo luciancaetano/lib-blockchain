@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import path from 'path';
 import rimraf from 'rimraf';
-import { Block, Blockchain } from '../src/index';
+import { Block, Blockchain } from '../src';
 
 jest.setTimeout(10000);
 
