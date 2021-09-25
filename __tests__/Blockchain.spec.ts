@@ -33,7 +33,7 @@ describe('Blockchain', () => {
         const dbName = crypto.randomBytes(16).toString('hex');
         dbPath = resolveDbName(dbName);
 
-        blockchain = new Blockchain<BlockType>(dbPath, ['data']);
+        blockchain = new Blockchain<BlockType>(dbPath);
         await blockchain.createGenesisBlock();
     });
 
@@ -106,7 +106,7 @@ describe('Blockchain', () => {
         const dbName = crypto.randomBytes(16).toString('hex');
         const p = resolveDbName(dbName);
 
-        const othjerChain = new Blockchain<BlockType>(p, ['data']);
+        const othjerChain = new Blockchain<BlockType>(p);
         await othjerChain.awaitForDatabaseConnection();
 
         await othjerChain.createGenesisBlock();
@@ -131,7 +131,7 @@ describe('Blockchain', () => {
 
         const currentBlocks = await blockchain.getBlockchain();
 
-        await blockchain.replaceBlockchain(newBlocks.map((b) => Blockchain.encode(b)));
+        await blockchain.replaceBlockchain(newBlocks);
 
         const newCurrentBlocks = await blockchain.getBlockchain();
 
@@ -149,16 +149,6 @@ describe('Blockchain', () => {
         expect(block?.data).toBe('Block 2');
     });
 
-    it('getBinaryBlockByIndex', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.getBinaryBlockByIndex(1);
-
-        const binaryValue = Blockchain.encode(blockchain.getBlockByIndex(1));
-
-        expect(binaryValue).toBeTruthy();
-    });
-
     it('getBlockchain', async () => {
         await blockchain.addBlock({ data: 'Block 1' });
         await blockchain.addBlock({ data: 'Block 2' });
@@ -166,17 +156,6 @@ describe('Blockchain', () => {
         const blocks = await blockchain.getBlockchain();
 
         expect(blocks.length).toBe(4);
-    });
-
-    it('getBinaryBlockchain', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.addBlock({ data: 'Block 3' });
-
-        const callbacks = jest.fn();
-        await blockchain.getBinaryBlockchain(0, callbacks);
-
-        expect(callbacks).toHaveBeenCalledTimes(4);
     });
 
     it('validate', async () => {
@@ -196,20 +175,8 @@ describe('Blockchain', () => {
 
         const callbacks = jest.fn();
 
-        await blockchain.eachBlock(callbacks);
+        await blockchain.forEach(callbacks);
 
         expect(callbacks).toHaveBeenCalledTimes(4);
-    });
-
-    it('onBlockAdded', async () => {
-        await blockchain.createGenesisBlock();
-
-        const callback = jest.fn();
-        blockchain.onBlockAdded(callback);
-
-        await blockchain.createGenesisBlock();
-        await blockchain.addBlock({ data: 'lorem impsum' });
-
-        expect(callback).toBeCalled();
     });
 });

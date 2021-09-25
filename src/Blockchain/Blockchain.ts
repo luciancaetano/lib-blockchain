@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import level from 'level';
 import { EventEmitter } from 'events';
 import { LockMutex } from '../Mutex/LockMutex';
-import { Block, GenesisBlock } from './types';
+import { Block, GenesisBlock, OnHashFunction } from './types';
 
 const encodeKey = (key: number) => {
     const buffer = Buffer.alloc(8);
@@ -17,20 +17,14 @@ export class Blockchain<BlockType extends Block> {
 
     private lock: LockMutex;
 
-    public static encode = (json: any): Buffer => Buffer.from(JSON.stringify(json));
-
-    public static decode = (buffer: Buffer): any => JSON.parse(buffer.toString('utf-8'));
-
     private isReplacing: boolean;
-
-    private hashAttrs: string[];
 
     /**
      * @constructor
      * @param  {string} dbPath
      */
-    constructor(dbPath: string, hashAttrs: string[]) {
-        this.db = level(dbPath, { valueEncoding: 'binary', keyEncoding: 'binary' }, (err) => {
+    constructor(dbPath: string, onHash: OnHashFunction<BlockType> | null = null) {
+        this.db = level(dbPath, { valueEncoding: 'json', keyEncoding: 'binary' }, (err) => {
             if (err) {
                 throw err;
             } else {
@@ -39,7 +33,9 @@ export class Blockchain<BlockType extends Block> {
         });
 
         this.lock = new LockMutex();
-        this.hashAttrs = hashAttrs;
+        if (onHash) {
+            this.onHash = onHash;
+        }
 
         this.isReplacing = false;
     }
@@ -49,22 +45,18 @@ export class Blockchain<BlockType extends Block> {
      *
      * @param  {BlockType} block
      */
-    private calculateBlockHash = (block: BlockType) => {
-        const hashTarget: any = {
-            index: block.index,
-            previousHash: block.previousHash,
-            timestamp: block.timestamp,
-        };
-
-        this.hashAttrs.forEach((prop) => {
-            hashTarget[prop] = (block as any)[prop];
-        });
-
-        const data = Blockchain.encode(hashTarget);
-
+    private onHash = async (block: BlockType) => {
         const hash = crypto.createHash('sha256');
 
-        hash.update(data);
+        const target: any = {};
+
+        Object.keys(block).forEach((key) => {
+            if (key !== 'hash') {
+                target[key] = (block as any)[key];
+            }
+        });
+
+        hash.update(JSON.stringify(target));
 
         return hash.digest('hex');
     };
@@ -102,7 +94,7 @@ export class Blockchain<BlockType extends Block> {
                     if (err) {
                         reject(err);
                     } else {
-                        resolve(Blockchain.decode(block));
+                        resolve(block);
                     }
                 });
             }
@@ -127,9 +119,9 @@ export class Blockchain<BlockType extends Block> {
             timestamp: new Date().getTime(),
         };
 
-        genesisBlock.hash = this.calculateBlockHash(genesisBlock as any);
+        genesisBlock.hash = await this.onHash(genesisBlock as any);
 
-        await this.db.put(encodeKey(genesisBlock.index), Blockchain.encode(genesisBlock));
+        await this.db.put(encodeKey(genesisBlock.index), genesisBlock);
 
         this.lock.release();
 
@@ -157,9 +149,9 @@ export class Blockchain<BlockType extends Block> {
         } as any;
 
         newBlock.index = lastBlock.index + 1;
-        newBlock.hash = this.calculateBlockHash(newBlock);
+        newBlock.hash = await this.onHash(newBlock);
 
-        this.db.put(encodeKey(newBlock.index), Blockchain.encode(newBlock), (err) => {
+        this.db.put(encodeKey(newBlock.index), newBlock, (err) => {
             if (err) reject(err);
 
             resolve(newBlock);
@@ -191,26 +183,26 @@ export class Blockchain<BlockType extends Block> {
 
     /**
      * Replace Blockchain blocks
-     * @param  {Buffer[]} binaryBlocks
+     * @param  {BlockType[]} blocks
      */
-    public replaceBlockchain = async (binaryBlocks: Buffer[]) => {
+    public replaceBlockchain = async (blocks: BlockType[]) => {
         await this.lock.acquire();
 
         const currentBlockchainLen = await this.length();
 
-        if (currentBlockchainLen > binaryBlocks.length) {
+        if (currentBlockchainLen > blocks.length) {
             throw new Error('The incoming chain must be longer');
         }
 
         this.isReplacing = true;
 
-        for (const buffer of binaryBlocks) {
-            if (!await this.validateBinaryBlockchain(binaryBlocks)) {
+        for (const buffer of blocks) {
+            if (!await this.validateIncomingBlocks(blocks)) {
                 this.lock.release();
                 throw new Error('The incoming chain must be valid');
             }
 
-            const block: BlockType = Blockchain.decode(buffer);
+            const block: BlockType = buffer;
 
             await this.db.put(encodeKey(block.index), buffer);
         }
@@ -228,17 +220,17 @@ export class Blockchain<BlockType extends Block> {
     }
 
     /**
-     * validate binary Blockchain data
-     * @param  {Buffer[]} binaryBlocks
+     * validate Blockchain data
+     * @param  {BlockType[]} blocks
      */
-    private validateBinaryBlockchain = async (binaryBlocks: Buffer[]) => {
+    private validateIncomingBlocks = async (blocks: BlockType[]) => {
         let prevMemBlock: BlockType | null = null;
 
-        for (let i = 0; i < binaryBlocks.length; i++) {
-            const currentBlock: BlockType = Blockchain.decode(binaryBlocks[i]);
-            const previousBlock: BlockType | null = prevMemBlock || (binaryBlocks[i - 1] ? Blockchain.decode(binaryBlocks[i - 1]) : null);
+        for (let i = 0; i < blocks.length; i++) {
+            const currentBlock: BlockType = blocks[i];
+            const previousBlock: BlockType | null = prevMemBlock || (blocks[i - 1] ? blocks[i - 1] : null);
 
-            if (await this.BlockchainingIsInvalid(currentBlock, previousBlock, prevMemBlock)) {
+            if (await this.blockchainingIsInvalid(currentBlock, previousBlock, prevMemBlock)) {
                 return false;
             }
 
@@ -255,20 +247,6 @@ export class Blockchain<BlockType extends Block> {
      * @param  {number} index
      */
     public getBlockByIndex = (index: number) => new Promise<BlockType | null>((resolve) => {
-        this.getBinaryBlockByIndex(index).then((buff) => {
-            if (buff) {
-                resolve(Blockchain.decode(buff));
-                return;
-            }
-            resolve(null);
-        });
-    });
-
-    /**
-     * Get block buffer
-     * @param  {number} index
-     */
-    public getBinaryBlockByIndex = (index: number) => new Promise<Buffer | null>((resolve) => {
         if (index < 0) {
             resolve(null);
         }
@@ -295,27 +273,11 @@ export class Blockchain<BlockType extends Block> {
             gte: encodeKey(fromIndex),
             ...(limit ? { limit } : {}),
         })
-            .on('data', (data) => blocks.push(Blockchain.decode(data.value)))
+            .on('data', (data) => blocks.push(data.value))
             .on('error', reject)
             .on('close', () => resolve(blocks))
             .on('end', () => resolve(blocks));
     });
-
-    /**
-     * interates over Blockchain and get buffers
-     *
-     * @param  {} fromIndex=0
-     * @param  {(block:Buffer,index:number,count:number)=>void} callback
-     */
-    public getBinaryBlockchain = async (fromIndex = 0, callback: (block: Buffer, index: number, count: number) => void) => {
-        const count = await this.length();
-        for (let i = fromIndex; i < count; i++) {
-            const block = await this.getBinaryBlockByIndex(i);
-            if (block) {
-                callback(block, i, count);
-            }
-        }
-    }
 
     /**
      * @param {number} fromIndex
@@ -328,7 +290,7 @@ export class Blockchain<BlockType extends Block> {
             const currentBlock = await this.getBlockByIndex(i);
             const previousBlock: any = prevMemBlock || await this.getBlockByIndex(i - 1);
 
-            if (await this.BlockchainingIsInvalid(currentBlock, previousBlock, prevMemBlock)) {
+            if (await this.blockchainingIsInvalid(currentBlock, previousBlock, prevMemBlock)) {
                 return false;
             }
 
@@ -348,8 +310,8 @@ export class Blockchain<BlockType extends Block> {
      * @param  {BlockType|null} previousBlock
      * @param  {BlockType|null} prevMemBlock
      */
-    private BlockchainingIsInvalid = async (currentBlock: BlockType | null, previousBlock: BlockType | null, prevMemBlock: BlockType | null) => {
-        if (currentBlock?.hash !== (currentBlock ? this.calculateBlockHash(currentBlock) : null)) {
+    private blockchainingIsInvalid = async (currentBlock: BlockType | null, previousBlock: BlockType | null, prevMemBlock: BlockType | null) => {
+        if (currentBlock?.hash !== (currentBlock ? await this.onHash(currentBlock) : null)) {
             return true;
         }
 
@@ -371,7 +333,7 @@ export class Blockchain<BlockType extends Block> {
     /**
      * @param  {(block:BlockType,index:number,count:number)=>void} callback
      */
-    public eachBlock = async (callback: (block: BlockType, index: number, count: number) => void) => {
+    public forEach = async (callback: (block: BlockType, index: number, count: number) => void) => {
         const count = await this.length();
         for (let i = 0; i < count; i++) {
             const block = await this.getBlockByIndex(i);
@@ -379,13 +341,6 @@ export class Blockchain<BlockType extends Block> {
                 callback(block, i, count);
             }
         }
-    }
-
-    /**
-     * @param  {(block:BlockType)=>void} callback
-     */
-    public onBlockAdded = (callback: (block: BlockType) => void) => {
-        this.emitter.on('blockAdded', callback);
     }
 
     public onReady = (callback: () => void) => {

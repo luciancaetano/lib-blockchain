@@ -17,3 +17,5 @@ export interface GenesisBlock extends Block {
         genesis: boolean;
     }
 }
+
+export type OnHashFunction<T> = (block: T) => Promise<string>;
