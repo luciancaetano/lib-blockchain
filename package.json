@@ -1,8 +1,9 @@
 {
   "name": "lib-blockchain",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Basic blockchain implementation",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "scripts": {
     "build": "rimraf dist && jest && eslint src && tsc",
     "lint": "eslint src",
