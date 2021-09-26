@@ -5,20 +5,6 @@ import { Block, Blockchain } from '../src';
 
 jest.setTimeout(10000);
 
-jest.mock('../src/Mutex/LockMutex', () => ({
-    LockMutex: class LockMutex {
-        public acquire() {
-            return new Promise<void>((resolve) => {
-                setTimeout(resolve, 10);
-            });
-        }
-
-        public release() {
-            //
-        }
-    },
-}));
-
 const resolveDbName = (name: string) => path.join(__dirname, '..', 'db', name);
 
 interface BlockType extends Block {
