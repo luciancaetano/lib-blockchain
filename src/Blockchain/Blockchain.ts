@@ -1,14 +1,66 @@
 import crypto from 'crypto';
 import level from 'level';
-import { Block, GenesisBlock, OnHashFunction } from './types';
+import { Block, OnValidateType } from './types';
 
-const encodeKey = (key: number) => {
-    const buffer = Buffer.alloc(8);
-    buffer.writeUInt32BE(key, 0);
+const genesisBlockSignature = Buffer.from('=====>blockchain-genesis-block<=====');
+
+const uint2b = (num: number) => {
+    const buffer = Buffer.alloc(4);
+    buffer.writeUInt32BE(num, 0);
     return buffer;
 };
 
-export class Blockchain<BlockType extends Block> {
+const uint642b = (num: number) => {
+    const buffer = Buffer.alloc(8);
+    buffer.writeBigUInt64BE(BigInt(num), 0);
+    return buffer;
+};
+
+const encodeBlock = (block: Block): Buffer => {
+    const chunks: Buffer[] = [];
+
+    chunks.push(uint2b(block.index));
+    chunks.push(uint642b(block.timestamp));
+    chunks.push(Buffer.from(block.hash, 'hex'));
+    chunks.push(Buffer.from(block.previousHash, 'hex'));
+    chunks.push(uint642b(block.data.length));
+    chunks.push(block.data);
+
+    return Buffer.concat(chunks);
+};
+
+const decodeBlock = (buffer: Buffer): Block => {
+    const dataLength = Number(buffer.readBigUInt64BE(76));
+
+    const block: Block = {
+        index: buffer.readInt32BE(0),
+        timestamp: Number(buffer.readBigUInt64BE(4)),
+        hash: buffer.slice(12, 44).toString('hex'),
+        previousHash: buffer.slice(44, 76).toString('hex'),
+        data: '' as any,
+    };
+
+    block.data = buffer.slice(84, 84 + dataLength);
+
+    return block;
+};
+
+const calculateBlockHash = async (block: Block) => {
+    const hash = crypto.createHash('sha256');
+
+    const buffer: Buffer = Buffer.concat([
+        uint2b(block.index),
+        uint642b(block.timestamp),
+        Buffer.from(block.previousHash, 'hex'),
+        block.data,
+    ]);
+
+    hash.update(buffer);
+
+    return hash.digest('hex');
+};
+
+export class Blockchain {
     private db: level.LevelDB;
 
     private isReplacing: boolean;
@@ -17,45 +69,23 @@ export class Blockchain<BlockType extends Block> {
 
     private isLocked = false;
 
+    private onValidateFn: OnValidateType | null = null;
+
     /**
      * @constructor
      * @param  {string} dbPath
      */
-    constructor(dbPath: string, onHash: OnHashFunction<BlockType> | null = null) {
-        this.db = level(dbPath, { valueEncoding: 'json', keyEncoding: 'binary' }, (err) => {
+    constructor(dbPath: string) {
+        this.db = level(dbPath, { valueEncoding: 'binary', keyEncoding: 'binary' }, (err) => {
             if (err) {
                 throw err;
             } else {
                 this.isReady = true;
             }
         });
-        if (onHash) {
-            this.onHash = onHash;
-        }
 
         this.isReplacing = false;
     }
-
-    /**
-     * Calculate block hash
-     *
-     * @param  {BlockType} block
-     */
-    private onHash = async (block: BlockType) => {
-        const hash = crypto.createHash('sha256');
-
-        const target: any = {};
-
-        Object.keys(block).forEach((key) => {
-            if (key !== 'hash') {
-                target[key] = (block as any)[key];
-            }
-        });
-
-        hash.update(JSON.stringify(target));
-
-        return hash.digest('hex');
-    };
 
     /**
      * Get blocks count
@@ -67,7 +97,7 @@ export class Blockchain<BlockType extends Block> {
         let count = 0;
 
         this.db.createKeyStream({
-            gte: encodeKey(0),
+            gte: uint2b(0),
         })
             .on('error', reject)
             .on('data', () => count++)
@@ -81,16 +111,16 @@ export class Blockchain<BlockType extends Block> {
      * @param  {} =>newPromise<T|null>((resolve
      * @param  {} reject
      */
-    public getLastBlock = () => new Promise<BlockType | null>((resolve, reject) => {
+    public getLastBlock = () => new Promise<Block | null>((resolve, reject) => {
         this.length().then((count) => {
             if (count === 0) {
                 resolve(null);
             } else {
-                this.db.get(encodeKey(count - 1), (err, block) => {
+                this.db.get(uint2b(count - 1), (err, block) => {
                     if (err) {
                         reject(err);
                     } else {
-                        resolve(block);
+                        resolve(decodeBlock(block));
                     }
                 });
             }
@@ -100,24 +130,24 @@ export class Blockchain<BlockType extends Block> {
     /**
      * Creates the genesis block
      */
-    public createGenesisBlock = async (): Promise<GenesisBlock | null> => {
+    public createGenesisBlock = async (): Promise<Block | null> => {
         await this.acquire();
 
         if (await this.getLastBlock()) {
             return null;
         }
 
-        const genesisBlock: GenesisBlock = {
-            data: { genesis: true },
+        const genesisBlock: Block = {
+            data: genesisBlockSignature,
             hash: '',
             index: 0,
-            previousHash: null as any,
+            previousHash: '0000000000000000000000000000000000000000000000000000000000000000',
             timestamp: new Date().getTime(),
         };
 
-        genesisBlock.hash = await this.onHash(genesisBlock as any);
+        genesisBlock.hash = await calculateBlockHash(genesisBlock as any);
 
-        await this.db.put(encodeKey(genesisBlock.index), genesisBlock);
+        await this.db.put(uint2b(genesisBlock.index), encodeBlock(genesisBlock));
 
         this.release();
 
@@ -127,48 +157,46 @@ export class Blockchain<BlockType extends Block> {
     /**
      * Add a single block
      *
-     * @param  {BlockType} data
+     * @param  {Block} data
      */
-    public addBlock = (block: Omit<BlockType, 'hash' | 'previousHash' | 'index' | 'timestamp'>) => new Promise<BlockType>(async (resolve, reject) => {
-        try {
-            await this.acquire();
+    public push = (block: Omit<Block, 'index' | 'hash' | 'previousHash' | 'timestamp'>) => new Promise<Block>((resolve, reject) => {
+        this.acquire().then(() => {
+            this.getLastBlock().then((lastBlock) => {
+                if (!lastBlock) throw new Error('No genesis block found');
 
-            const lastBlock = await this.getLastBlock();
+                const newBlock: Block = {
+                    ...block,
+                    hash: '',
+                    previousHash: lastBlock.hash,
+                    index: 0,
+                    timestamp: new Date().getTime(),
+                } as any;
 
-            if (!lastBlock) throw new Error('No genesis block found');
+                newBlock.index = lastBlock.index + 1;
 
-            const newBlock: BlockType = {
-                ...block,
-                hash: '',
-                previousHash: lastBlock.hash,
-                index: 0,
-                timestamp: new Date().getTime(),
-            } as any;
-
-            newBlock.index = lastBlock.index + 1;
-            newBlock.hash = await this.onHash(newBlock);
-
-            this.db.put(encodeKey(newBlock.index), newBlock, (err) => {
-                if (err) reject(err);
-                resolve(newBlock);
-            });
-        } catch (e) {
-            reject(e);
-        }
+                calculateBlockHash(newBlock).then((hash) => {
+                    newBlock.hash = hash;
+                    this.db.put(uint2b(newBlock.index), encodeBlock(newBlock), (err) => {
+                        if (err) reject(err);
+                        resolve(newBlock);
+                    });
+                }).catch(reject);
+            }).catch(reject);
+        }).catch(reject);
     });
 
     /**
      * findBloick by predicate
      *
-     * @param  {(value:BlockType,index:number)=>boolean} predicate
+     * @param  {(value:Block,index:number)=>boolean} predicate
      */
-    public findBlock = async (predicate: (value: BlockType, index: number) => boolean) => {
+    public find = async (predicate: (value: Block, index: number) => boolean) => {
         const count = await this.length();
         for (let i = 1; i < count; i++) {
-            const block = await this.getBlockByIndex(i);
+            const block = await this.at(i);
 
             if (block) {
-                if (predicate(block as BlockType, i)) {
+                if (predicate(block as Block, i)) {
                     return block;
                 }
             }
@@ -179,9 +207,9 @@ export class Blockchain<BlockType extends Block> {
 
     /**
      * Replace Blockchain blocks
-     * @param  {BlockType[]} blocks
+     * @param  {Block[]} blocks
      */
-    public replaceBlockchain = async (blocks: BlockType[]) => {
+    public replace = async (blocks: Block[]) => {
         await this.acquire();
 
         const currentBlockchainLen = await this.length();
@@ -193,14 +221,14 @@ export class Blockchain<BlockType extends Block> {
         this.isReplacing = true;
 
         for (const buffer of blocks) {
-            if (!await this.validateIncomingBlocks(blocks)) {
+            if (!await this.validateReplacingBlocks(blocks)) {
                 this.release();
                 throw new Error('The incoming chain must be valid');
             }
 
-            const block: BlockType = buffer;
+            const block: Block = buffer;
 
-            await this.db.put(encodeKey(block.index), buffer);
+            await this.db.put(uint2b(block.index), encodeBlock(buffer));
         }
 
         this.isReplacing = false;
@@ -216,41 +244,18 @@ export class Blockchain<BlockType extends Block> {
     }
 
     /**
-     * validate Blockchain data
-     * @param  {BlockType[]} blocks
-     */
-    private validateIncomingBlocks = async (blocks: BlockType[]) => {
-        let prevMemBlock: BlockType | null = null;
-
-        for (let i = 0; i < blocks.length; i++) {
-            const currentBlock: BlockType = blocks[i];
-            const previousBlock: BlockType | null = prevMemBlock || (blocks[i - 1] ? blocks[i - 1] : null);
-
-            if (await this.blockchainingIsInvalid(currentBlock, previousBlock, prevMemBlock)) {
-                return false;
-            }
-
-            if (currentBlock) {
-                prevMemBlock = currentBlock;
-            }
-        }
-
-        return true;
-    }
-
-    /**
      * get decoded block
      * @param  {number} index
      */
-    public getBlockByIndex = (index: number) => new Promise<BlockType | null>((resolve) => {
+    public at = (index: number) => new Promise<Block | null>((resolve) => {
         if (index < 0) {
             resolve(null);
         }
-        this.db.get(encodeKey(index), (err, data) => {
+        this.db.get(uint2b(index), (err, data) => {
             if (err) {
                 resolve(null);
             } else {
-                resolve(data);
+                resolve(decodeBlock(data));
             }
         });
     });
@@ -262,14 +267,14 @@ export class Blockchain<BlockType extends Block> {
      * @param  {} =>newPromise<T[]>((resolve
      * @param  {} reject
      */
-    public getBlockchain = async (fromIndex = 0, limit?: number) => new Promise<BlockType[]>((resolve, reject) => {
-        const blocks: BlockType[] = [];
+    public toArray = async (fromIndex = 0, limit?: number) => new Promise<Block[]>((resolve, reject) => {
+        const blocks: Block[] = [];
 
         this.db.createReadStream({
-            gte: encodeKey(fromIndex),
+            gte: uint2b(fromIndex),
             ...(limit ? { limit } : {}),
         })
-            .on('data', (data) => blocks.push(data.value))
+            .on('data', (data) => blocks.push(decodeBlock(data.value)))
             .on('error', reject)
             .on('close', () => resolve(blocks))
             .on('end', () => resolve(blocks));
@@ -280,13 +285,13 @@ export class Blockchain<BlockType extends Block> {
      */
     public validate = async (fromIndex = 0, onProgress?: (progress: number) => void): Promise<boolean> => {
         const length = await this.length();
-        let prevMemBlock: BlockType | null = null;
+        let prevMemBlock: Block | null = null;
 
         for (let i = fromIndex; i < length; i++) {
-            const currentBlock = await this.getBlockByIndex(i);
-            const previousBlock: any = prevMemBlock || await this.getBlockByIndex(i - 1);
+            const currentBlock = await this.at(i);
+            const previousBlock: any = prevMemBlock || await this.at(i - 1);
 
-            if (await this.blockchainingIsInvalid(currentBlock, previousBlock, prevMemBlock)) {
+            if (await this.performValidation(currentBlock, previousBlock, prevMemBlock)) {
                 return false;
             }
 
@@ -302,16 +307,66 @@ export class Blockchain<BlockType extends Block> {
     };
 
     /**
-     * @param  {BlockType|null} currentBlock
-     * @param  {BlockType|null} previousBlock
-     * @param  {BlockType|null} prevMemBlock
+     * @param  {(block:Block,index:number,count:number)=>void} callback
      */
-    private blockchainingIsInvalid = async (currentBlock: BlockType | null, previousBlock: BlockType | null, prevMemBlock: BlockType | null) => {
-        if (currentBlock?.hash !== (currentBlock ? await this.onHash(currentBlock) : null)) {
+    public forEach = async (callback: (block: Block, index: number, count: number) => void) => {
+        const count = await this.length();
+        for (let i = 0; i < count; i++) {
+            const block = await this.at(i);
+            if (block) {
+                callback(block, i, count);
+            }
+        }
+    }
+
+    public onValidate = (callback: OnValidateType | null) => {
+        this.onValidateFn = callback;
+    }
+
+    // wait for isReady be true using timer
+    public waitDbOpen = () => new Promise<void>((resolve) => {
+        const timer = setInterval(() => {
+            if (this.isReady) {
+                clearInterval(timer);
+                resolve();
+            }
+        }, 100);
+    })
+
+    /**
+     * validate Blockchain data
+     * @param  {Block[]} blocks
+     */
+    private validateReplacingBlocks = async (blocks: Block[]) => {
+        let prevMemBlock: Block | null = null;
+
+        for (let i = 0; i < blocks.length; i++) {
+            const currentBlock: Block = blocks[i];
+            const previousBlock: Block | null = prevMemBlock || (blocks[i - 1] ? blocks[i - 1] : null);
+
+            if (await this.performValidation(currentBlock, previousBlock, prevMemBlock)) {
+                return false;
+            }
+
+            if (currentBlock) {
+                prevMemBlock = currentBlock;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  {Block|null} currentBlock
+     * @param  {Block|null} previousBlock
+     * @param  {Block|null} prevMemBlock
+     */
+    private performValidation = async (currentBlock: Block | null, previousBlock: Block | null, prevMemBlock: Block | null) => {
+        if (currentBlock?.hash !== (currentBlock ? await calculateBlockHash(currentBlock) : null)) {
             return true;
         }
 
-        const isGenesis = (currentBlock as any)?.data?.genesis;
+        const isGenesis = currentBlock.data.compare(genesisBlockSignature) === 0;
 
         if (!isGenesis) {
             if (currentBlock?.previousHash !== previousBlock?.hash) {
@@ -321,33 +376,16 @@ export class Blockchain<BlockType extends Block> {
             if (!prevMemBlock || prevMemBlock.timestamp >= currentBlock.timestamp) {
                 return true;
             }
+
+            if (this.onValidateFn) {
+                if (!await this.onValidateFn(currentBlock)) {
+                    return true;
+                }
+            }
         }
 
         return false;
     }
-
-    /**
-     * @param  {(block:BlockType,index:number,count:number)=>void} callback
-     */
-    public forEach = async (callback: (block: BlockType, index: number, count: number) => void) => {
-        const count = await this.length();
-        for (let i = 0; i < count; i++) {
-            const block = await this.getBlockByIndex(i);
-            if (block) {
-                callback(block, i, count);
-            }
-        }
-    }
-
-    // wait for isReady be true using timer
-    public awaitForDatabaseConnection = () => new Promise<void>((resolve) => {
-        const timer = setInterval(() => {
-            if (this.isReady) {
-                clearInterval(timer);
-                resolve();
-            }
-        }, 100);
-    })
 
     private acquire = () => new Promise<void>((resolve) => {
         const timer = setInterval(() => {

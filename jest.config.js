@@ -12,7 +12,7 @@ module.exports = {
     resolver: 'jest-pnp-resolver',
     collectCoverage: true,
     collectCoverageFrom: [
-        'src/**/*.{ts}',
+        './src/**/*.{ts}',
     ],
     coverageThreshold: {
         global: {

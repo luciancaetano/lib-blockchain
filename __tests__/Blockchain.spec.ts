@@ -1,25 +1,21 @@
 import crypto from 'crypto';
 import path from 'path';
 import rimraf from 'rimraf';
-import { Block, Blockchain } from '../src';
+import { Blockchain, Block } from '../src';
 
 jest.setTimeout(10000);
 
 const resolveDbName = (name: string) => path.join(__dirname, '..', 'db', name);
 
-interface BlockType extends Block {
-    data: string;
-}
-
 describe('Blockchain', () => {
-    let blockchain!: Blockchain<BlockType>;
+    let blockchain!: Blockchain;
     let dbPath: string;
 
     beforeEach(async () => {
         const dbName = crypto.randomBytes(16).toString('hex');
         dbPath = resolveDbName(dbName);
 
-        blockchain = new Blockchain<BlockType>(dbPath);
+        blockchain = new Blockchain(dbPath);
         await blockchain.createGenesisBlock();
     });
 
@@ -45,62 +41,62 @@ describe('Blockchain', () => {
 
         expect(count).toBe(1);
         expect(lastBlock?.index).toBe(0);
-        expect(lastBlock?.data).toMatchObject({ genesis: true });
+        expect(lastBlock?.data).toBeTruthy();
     });
 
     it('length', async () => {
         const count = Math.floor(Math.random() * (100 - 10 + 1)) + 10;
 
         for (let i = 0; i < count; i++) {
-            await blockchain.addBlock({ data: `Block ${i}` });
+            await blockchain.push({ data: Buffer.from(`Block ${i}`, 'utf-8') });
         }
 
         const length = await blockchain.length();
 
-        const b = await blockchain.getBlockchain();
+        const b = await blockchain.toArray();
 
         expect(length).toBe(b.length);
     });
 
     it('getLastBlock', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.addBlock({ data: 'Block 3' });
+        await blockchain.push({ data: Buffer.from('Block 1', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 2', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 3', 'utf-8') });
 
         const lastBlock = await blockchain.getLastBlock();
 
-        expect(lastBlock?.data).toBe('Block 3');
+        expect(lastBlock?.data.toString('utf-8')).toBe('Block 3');
     });
 
     it('findBlock', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.addBlock({ data: 'Block 3' });
+        await blockchain.push({ data: Buffer.from('Block 1', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 2', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 3', 'utf-8') });
 
-        const foundBlock = await blockchain.findBlock((b) => b.data === 'Block 2');
+        const foundBlock = await blockchain.find((b) => b.data.toString('utf-8') === 'Block 2');
 
-        expect(foundBlock?.data).toBe('Block 2');
+        expect(foundBlock?.data.toString('utf-8')).toBe('Block 2');
     });
 
     it('replaceBlockchain', async () => {
-        blockchain.addBlock({ data: 'Block 1' });
-        blockchain.addBlock({ data: 'Block 2' });
-        blockchain.addBlock({ data: 'Block 3' });
+        blockchain.push({ data: Buffer.from('Block 1', 'utf-8') });
+        blockchain.push({ data: Buffer.from('Block 2', 'utf-8') });
+        blockchain.push({ data: Buffer.from('Block 3', 'utf-8') });
 
-        const newBlocks: BlockType[] = [];
+        const newBlocks: Block[] = [];
 
         const dbName = crypto.randomBytes(16).toString('hex');
         const p = resolveDbName(dbName);
 
-        const othjerChain = new Blockchain<BlockType>(p);
-        await othjerChain.awaitForDatabaseConnection();
+        const othjerChain = new Blockchain(p);
+        await othjerChain.waitDbOpen();
 
         await othjerChain.createGenesisBlock();
-        await othjerChain.addBlock({ data: 'Block -1' });
-        await othjerChain.addBlock({ data: 'Block -2' });
-        await othjerChain.addBlock({ data: 'Block 3' });
+        await othjerChain.push({ data: Buffer.from('Block -1', 'utf-8') });
+        await othjerChain.push({ data: Buffer.from('Block -2', 'utf-8') });
+        await othjerChain.push({ data: Buffer.from('Block 3', 'utf-8') });
 
-        (await othjerChain.getBlockchain()).forEach((b) => {
+        (await othjerChain.toArray()).forEach((b) => {
             newBlocks.push(b);
         });
 
@@ -115,39 +111,39 @@ describe('Blockchain', () => {
             });
         });
 
-        const currentBlocks = await blockchain.getBlockchain();
+        const currentBlocks = await blockchain.toArray();
 
-        await blockchain.replaceBlockchain(newBlocks);
+        await blockchain.replace(newBlocks);
 
-        const newCurrentBlocks = await blockchain.getBlockchain();
+        const newCurrentBlocks = await blockchain.toArray();
 
         expect(newCurrentBlocks).toEqual(newBlocks);
         expect(newCurrentBlocks).not.toEqual(currentBlocks);
     });
 
     it('getBlockByIndex', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.addBlock({ data: 'Block 3' });
+        await blockchain.push({ data: Buffer.from('Block 1', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 2', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 3', 'utf-8') });
 
-        const block = await blockchain.getBlockByIndex(2);
+        const block = await blockchain.at(2);
 
-        expect(block?.data).toBe('Block 2');
+        expect(block?.data.toString('utf-8')).toBe('Block 2');
     });
 
-    it('getBlockchain', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.addBlock({ data: 'Block 3' });
-        const blocks = await blockchain.getBlockchain();
+    it('toArray', async () => {
+        await blockchain.push({ data: Buffer.from('Block 1', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 2', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 3', 'utf-8') });
+        const blocks = await blockchain.toArray();
 
         expect(blocks.length).toBe(4);
     });
 
     it('validate', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.addBlock({ data: 'Block 3' });
+        await blockchain.push({ data: Buffer.from('Block 1', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 2', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 3', 'utf-8') });
 
         const isValid = await blockchain.validate();
 
@@ -155,9 +151,9 @@ describe('Blockchain', () => {
     });
 
     it('eachBlock', async () => {
-        await blockchain.addBlock({ data: 'Block 1' });
-        await blockchain.addBlock({ data: 'Block 2' });
-        await blockchain.addBlock({ data: 'Block 3' });
+        await blockchain.push({ data: Buffer.from('Block 1', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 2', 'utf-8') });
+        await blockchain.push({ data: Buffer.from('Block 3', 'utf-8') });
 
         const callbacks = jest.fn();
 

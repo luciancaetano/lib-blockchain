@@ -10,12 +10,8 @@ export interface Block {
 
     // The time of the block
     timestamp: number;
+
+    data: Buffer;
 }
 
-export interface GenesisBlock extends Block {
-    data: {
-        genesis: boolean;
-    }
-}
-
-export type OnHashFunction<T> = (block: T) => Promise<string>;
+export type OnValidateType = (block: Block) => Promise<boolean>;
