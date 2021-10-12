@@ -6,11 +6,10 @@ Blockchain implementation using leveldb as storage engine.
 ```javascript
 import {Blockchain} from 'lib-Blockchain';
 
-// add data attribute to hash calculation
-const b = new Blockchain('db-path', ['data']);
+const b = new Blockchain('db-path');
 
-b.createGenesisBlock(); // create genesis block
-b.addBlock({ data: 'Hello world' });
+b.genesis(); // create genesis block
+b.push({ data: Buffer.from('Hello world', 'utf-8') });
 
-console.log(b.getBlockchain());
+console.log(b.toArray());
 ```

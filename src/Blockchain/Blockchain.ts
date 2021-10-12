@@ -130,7 +130,7 @@ export class Blockchain {
     /**
      * Creates the genesis block
      */
-    public createGenesisBlock = async (): Promise<Block | null> => {
+    public genesis = async (): Promise<Block | null> => {
         await this.acquire();
 
         if (await this.getLastBlock()) {
