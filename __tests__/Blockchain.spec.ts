@@ -16,7 +16,7 @@ describe('Blockchain', () => {
         dbPath = resolveDbName(dbName);
 
         blockchain = new Blockchain(dbPath);
-        await blockchain.createGenesisBlock();
+        await blockchain.genesis();
     });
 
     afterEach(async () => {
@@ -91,7 +91,7 @@ describe('Blockchain', () => {
         const othjerChain = new Blockchain(p);
         await othjerChain.waitDbOpen();
 
-        await othjerChain.createGenesisBlock();
+        await othjerChain.genesis();
         await othjerChain.push({ data: Buffer.from('Block -1', 'utf-8') });
         await othjerChain.push({ data: Buffer.from('Block -2', 'utf-8') });
         await othjerChain.push({ data: Buffer.from('Block 3', 'utf-8') });
