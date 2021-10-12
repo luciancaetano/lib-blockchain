@@ -2,8 +2,6 @@ import crypto from 'crypto';
 import level from 'level';
 import { Block, OnValidateType } from './types';
 
-const genesisBlockSignature = Buffer.from('=====>blockchain-genesis-block<=====');
-
 const uint2b = (num: number) => {
     const buffer = Buffer.alloc(4);
     buffer.writeUInt32BE(num, 0);
@@ -75,7 +73,7 @@ export class Blockchain {
      * @constructor
      * @param  {string} dbPath
      */
-    constructor(dbPath: string) {
+    constructor(dbPath: string, private genesisData = Buffer.from('=====>blockchain-genesis-block<=====')) {
         this.db = level(dbPath, { valueEncoding: 'binary', keyEncoding: 'binary' }, (err) => {
             if (err) {
                 throw err;
@@ -138,7 +136,7 @@ export class Blockchain {
         }
 
         const genesisBlock: Block = {
-            data: genesisBlockSignature,
+            data: this.genesisData,
             hash: '',
             index: 0,
             previousHash: '0000000000000000000000000000000000000000000000000000000000000000',
@@ -366,7 +364,7 @@ export class Blockchain {
             return true;
         }
 
-        const isGenesis = currentBlock.data.compare(genesisBlockSignature) === 0;
+        const isGenesis = currentBlock.data.compare(this.genesisData) === 0;
 
         if (!isGenesis) {
             if (currentBlock?.previousHash !== previousBlock?.hash) {
