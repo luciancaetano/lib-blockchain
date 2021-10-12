@@ -203,7 +203,7 @@ export class Blockchain {
         }
 
         return null;
-    }
+    };
 
     /**
      * Replace Blockchain blocks
@@ -233,7 +233,7 @@ export class Blockchain {
 
         this.isReplacing = false;
         this.release();
-    }
+    };
 
     /**
      * check if Blockchain is locked for replacing
@@ -317,11 +317,11 @@ export class Blockchain {
                 callback(block, i, count);
             }
         }
-    }
+    };
 
     public onValidate = (callback: OnValidateType | null) => {
         this.onValidateFn = callback;
-    }
+    };
 
     // wait for isReady be true using timer
     public waitDbOpen = () => new Promise<void>((resolve) => {
@@ -331,7 +331,7 @@ export class Blockchain {
                 resolve();
             }
         }, 100);
-    })
+    });
 
     /**
      * validate Blockchain data
@@ -354,7 +354,7 @@ export class Blockchain {
         }
 
         return true;
-    }
+    };
 
     /**
      * @param  {Block|null} currentBlock
@@ -385,7 +385,7 @@ export class Blockchain {
         }
 
         return false;
-    }
+    };
 
     private acquire = () => new Promise<void>((resolve) => {
         const timer = setInterval(() => {
@@ -402,5 +402,5 @@ export class Blockchain {
 
     public close = async () => {
         await this.db.close();
-    }
+    };
 }
